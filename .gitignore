@@ -1,0 +1,15 @@
+# Ignorer les datasets lourds
+data/*
+!data/*/.gitkeep
+!data/*/README.md
+
+# Ignorer les fichiers temporaires
+*.zip
+*.csv
+*.h5
+*.pkl
+*.npy
+*.npz
+__pycache__/
+*.log
+.DS_Store
