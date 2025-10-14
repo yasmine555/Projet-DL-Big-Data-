@@ -130,3 +130,16 @@ Disease	Data Type	Format	Classes	Folder
 Alzheimer’s	MRI	.nii, .jpg	4 classes (dementia severity)	/data/Alzheimer/
 Parkinson’s	MRI + voice (metadata)	.jpg, .csv, .json	PD vs HC	/data/Parkinson/
 Multiple Sclerosis	MRI	.jpg	MS vs Normal	/data/MS/
+
+----
+* start the backend 
+cd backend
+venv/Scripts/activate
+uvicorn main:app --reload
+
+* start the frontend
+cd frontend
+npm install
+npm start
+
+
