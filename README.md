@@ -131,12 +131,15 @@ Alzheimer’s	MRI	.nii, .jpg	4 classes (dementia severity)	/data/Alzheimer/
 Parkinson’s	MRI + voice (metadata)	.jpg, .csv, .json	PD vs HC	/data/Parkinson/
 Multiple Sclerosis	MRI	.jpg	MS vs Normal	/data/MS/
 
-----
-* start the backend 
+---------------
+# Backend Setup
 cd backend
+python -m venv venv
 venv/Scripts/activate
+pip install -r requirements.txt
 uvicorn main:app --reload
 
+# Frontend Setup
 * start the frontend
 cd frontend
 npm install
