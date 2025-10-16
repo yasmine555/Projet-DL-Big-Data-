@@ -147,18 +147,7 @@ function LandingSection() {
           </div>
         </div>
         
-        {/* Add a simple contact section for the contact navigation link to work */}
-        <div className="container mx-auto px-6 py-16 bg-transparent" id="contact">
-          <h2 className="text-3xl font-bold text-center text-gray-800 mb-12">Contact Us</h2>
-          <div className="max-w-2xl mx-auto bg-white bg-opacity-90 rounded-xl shadow-md p-6 text-center">
-            <p className="mb-6 text-gray-600">
-              Have questions about our platform? Our team is here to help.
-            </p>
-            <button className="bg-blue-500 hover:bg-blue-600 text-white font-medium py-2 px-6 rounded-full">
-              Get in Touch
-            </button>
-          </div>
-        </div>
+       
       </div>
     </div>
   );
