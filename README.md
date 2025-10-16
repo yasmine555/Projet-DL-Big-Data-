@@ -134,15 +134,21 @@ Multiple Sclerosis	MRI	.jpg	MS vs Normal	/data/MS/
 ---------------
 # Backend Setup
 cd backend
-python -m venv venv
+python -m venv venv 
+
 venv/Scripts/activate
+
 pip install -r requirements.txt
+
 uvicorn main:app --reload
 
 # Frontend Setup
-* start the frontend
+
+
 cd frontend
+
 npm install
+
 npm start
 
 
