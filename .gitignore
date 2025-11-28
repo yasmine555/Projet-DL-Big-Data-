@@ -15,6 +15,8 @@ __pycache__/
 .DS_Store
 
 backend/venv/
+backend/app/config.py
+
 frontend/node_modules/
 npm-debug.log
 yarn-debug.log

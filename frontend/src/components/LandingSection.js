@@ -146,8 +146,6 @@ function LandingSection() {
             </div>
           </div>
         </div>
-        
-       
       </div>
     </div>
   );
