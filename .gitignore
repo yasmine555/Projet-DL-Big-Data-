@@ -16,6 +16,7 @@ __pycache__/
 
 backend/venv/
 backend/app/config.py
+data/app/.env
 
 frontend/node_modules/
 npm-debug.log
