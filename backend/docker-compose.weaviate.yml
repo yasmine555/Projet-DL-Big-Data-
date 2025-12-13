@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  weaviate:
+    image: semitechnologies/weaviate:1.23.7
+    container_name: weaviate-medical-rag
+    restart: on-failure:0
+    ports:
+      - "8085:8080"  # Changed to 8081 to avoid conflict with backend
+      - "50051:50051"
+    environment:
+      QUERY_DEFAULTS_LIMIT: 25
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: 'true'
+      PERSISTENCE_DATA_PATH: '/var/lib/weaviate'
+      DEFAULT_VECTORIZER_MODULE: 'none'
+      ENABLE_MODULES: ''
+      CLUSTER_HOSTNAME: 'node1'
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+
+volumes:
+  weaviate_data:
