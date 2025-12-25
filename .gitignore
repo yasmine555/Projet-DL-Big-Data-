@@ -27,7 +27,9 @@ Thumbs.db
 *.njsproj
 *.sln
 *.sw?
-backend/uploads/
+backend/uploads/certificate
+backend/uploads/mri
+backend/uploads/xai
 
 # Environment files
 .env
@@ -56,17 +58,9 @@ backend/app/uploads/**
 uploads/
 data/mri_image/
 backend/data/mri_image/
-backend/data/processed_enhanced/embeddings.npy
-backend/data/processed_enhanced/nodes.json
-backend/data/processed_enhanced/knowledge_graph.json
-backend/data/processed_enhanced/processing_stats.json
 
-# Models and large binaries (track via LFS if needed)
-*.h5
-*.pth
-backend/data/chroma_db/
-backend/app/models/best_model*
-backend/app/models/resnet50_best*
+
+
 # Docker & local runtime
 docker-compose.override.yml
 .python-version
