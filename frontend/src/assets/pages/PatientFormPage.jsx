@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import FormNav from '../components/patient-form/navPatient';
-import { createPatient, updatePatient, askQuery, getPatientMRIScans, analyzePatientMRI } from '../../services/api';
+import { createPatient, updatePatient, askQuery, submitQuestionnaire, getPatientMRIScans, analyzePatientMRI } from '../../services/api';
 
 import BasicInfoSection from '../components/patient-form/BasicInfoSection';
 import SymptomsSection from '../components/patient-form/SymptomsSection';
@@ -96,16 +96,18 @@ export default function PatientFormPage() {
           }
         })();
       }
-      }
-    }, [location, userType]);
+    }
+  }, [location, userType]);
 
   const sections = [
     { id: 'basic', label: 'Basic Info' },
     { id: 'symptoms', label: 'Symptoms' },
     { id: 'lifestyle', label: 'Lifestyle' },
     { id: 'medical', label: 'Medical History' },
-    ...(userType === 'doctor' ? [{ id: 'tests', label: 'Clinical Tests' }] : []),
-    { id: 'mri', label: 'MRI Upload' },
+    ...(userType === 'doctor' ? [
+      { id: 'tests', label: 'Clinical Tests' },
+      { id: 'mri', label: 'MRI Upload' }
+    ] : []),
   ];
 
   const validateForm = () => {
@@ -113,7 +115,8 @@ export default function PatientFormPage() {
     if (userType === 'doctor' && !formData.patientName) newErrors.patientName = 'Name is required';
     if (!formData.patientAge) newErrors.patientAge = 'Age is required';
     if (!formData.patientGender) newErrors.patientGender = 'Gender is required';
-    if (mode === 'create' && !selectedFile) newErrors.file = 'MRI scan is required';
+    // Only require MRI for doctors
+    if (userType === 'doctor' && mode === 'create' && !selectedFile) newErrors.file = 'MRI scan is required';
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
@@ -131,9 +134,9 @@ export default function PatientFormPage() {
         family_history: formData.familyHistory ? 'Yes' : 'No',
         medical_history: formData.existingConditions.join(', '),
         symptoms_list: [...formData.cognitiveSymptoms, ...formData.motorSymptoms],
-        neuro_exam_notes: formData.neuroExamNotes,
-        mse: parseFloat(formData.mmse) || null,
-        moca: parseFloat(formData.moca) || null,
+        neuro_exam_notes: userType === 'doctor' ? formData.neuroExamNotes : '', // Only save notes if doctor
+        mse: userType === 'doctor' ? (parseFloat(formData.mmse) || null) : null,
+        moca: userType === 'doctor' ? (parseFloat(formData.moca) || null) : null,
         metrics: {
           biomarkers: {
             amyloid: formData.amyloid,
@@ -164,8 +167,8 @@ export default function PatientFormPage() {
       const metadata = {
         ...patientData,
         medical_history: formData.existingConditions,
-        mmse_score: parseFloat(formData.mmse) || null,
-        moca_score: parseFloat(formData.moca) || null,
+        mmse_score: userType === 'doctor' ? (parseFloat(formData.mmse) || null) : null,
+        moca_score: userType === 'doctor' ? (parseFloat(formData.moca) || null) : null,
         biomarkers: { amyloid: formData.amyloid, tau: formData.tau, apoe4: formData.apoe4 },
         user_type: userType,
       };
@@ -182,7 +185,7 @@ export default function PatientFormPage() {
             try {
               const scans = await getPatientMRIScans(savedPatient.id);
               setMriScans(scans?.scans || []);
-            } catch (e) {}
+            } catch (e) { }
           }
         }
       } catch (mriErr) {
@@ -191,14 +194,29 @@ export default function PatientFormPage() {
       }
 
       const responses = [0];
-      const analysisResult = await askQuery(responses, metadata, savedPatient.id);
+      const analysisResult = await submitQuestionnaire({
+        responses,
+        metadata,
+        patient_id: savedPatient.id
+      });
 
-      sessionStorage.setItem('patient_id', savedPatient.id);
+      // If backend created a new real patient ID (for anonymous users), use it
+      let finalPatientId = savedPatient.id;
+      if (analysisResult.created_patient_id) {
+        finalPatientId = analysisResult.created_patient_id;
+        console.log("Switched from temp ID to real DB ID:", finalPatientId);
+        sessionStorage.setItem('patient_id', finalPatientId);
+      }
+
       sessionStorage.setItem('patient_context', JSON.stringify(metadata));
       sessionStorage.setItem('questionnaire_result', JSON.stringify(analysisResult));
-      if (previewUrl) sessionStorage.setItem('mri_preview', previewUrl);
+
       setToast({ show: true, type: 'success', message: 'Form submitted successfully. Redirecting to AI Analysis...' });
-      navigate('/results');
+      if (userType === 'doctor') {
+        navigate(`/doctor/patient/result/${finalPatientId}`);
+      } else {
+        navigate(`/patient/result/${finalPatientId}`);
+      }
     } catch (error) {
       console.error('Error submitting data:', error);
       setToast({ show: true, type: 'danger', message: 'Error submitting data. Please try again.' });
@@ -211,12 +229,12 @@ export default function PatientFormPage() {
 
   return (
     <div className="min-h-screen bg-neutral-100">
-      
+
       {userType === 'doctor' && (
-        <FormNav />   )}
+        <FormNav />)}
       <div className="p-20">
         <div className="container mx-auto px-8 py-10 max-w-3xl ">
-        
+
 
           <div className="text-center mb-10">
             <h1 className=" font-bold text-gray-800 mb-4">
@@ -271,25 +289,29 @@ export default function PatientFormPage() {
                 onChange={setFormData}
               />
               {userType === 'doctor' && (
-                <TestsSection
-                  visible={activeSection === 'tests'}
-                  formData={formData}
-                  onChange={setFormData}
-                />
+                <>
+                  <TestsSection
+                    visible={activeSection === 'tests'}
+                    formData={formData}
+                    onChange={setFormData}
+                  />
+                  <MRIUploadSection
+                    visible={activeSection === 'mri'}
+                    errors={errors}
+                    selectedFile={selectedFile}
+                    previewUrl={previewUrl}
+                    onFileChange={setSelectedFile}
+                    onPreviewChange={setPreviewUrl}
+                    scans={mriScans}
+                  />
+                </>
               )}
-              <MRIUploadSection
-                visible={activeSection === 'mri'}
-                errors={errors}
-                selectedFile={selectedFile}
-                previewUrl={previewUrl}
-                onFileChange={setSelectedFile}
-                onPreviewChange={setPreviewUrl}
-                scans={mriScans}
-              />
 
-              
+
+
             </div>
-            {activeSection === 'mri' && (
+            {/* Show Submit button on MRI tab (Doctor) OR Medical tab (Patient) */}
+            {((userType === 'doctor' && activeSection === 'mri') || (userType === 'patient' && activeSection === 'medical')) && (
               <div className="p-5 bg-gradient-to-b from-transparent to-indigo-50 flex justify-end">
                 <button type="submit" disabled={isLoading} className={`btn-primary btn-sm flex items-center ${isLoading ? 'opacity-50 cursor-not-allowed' : ''}`}>
                   {isLoading ? (

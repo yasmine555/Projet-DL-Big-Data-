@@ -23,7 +23,7 @@ async function handle(res) {
     try {
       const t = await res.text();
       msg = t || msg;
-    } catch (_) {}
+    } catch (_) { }
     throw new Error(msg);
   }
   const ct = res.headers.get("content-type") || "";
@@ -163,6 +163,15 @@ export async function analyzePatientMRI(patientId, file) {
 }
 
 // -------- AI / Questionnaire --------
+export async function submitQuestionnaire(payload) {
+  const res = await fetch(withBase("/submit"), {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(payload || {}),
+  });
+  return handle(res); // QuestionnaireResponse
+}
+
 export async function askQuery(payload) {
   const res = await fetch(withBase("/ai/query/"), {
     method: "POST",
@@ -174,7 +183,7 @@ export async function askQuery(payload) {
 
 export async function getPatientResults(patientId) {
   // Backend returns list with latest result first (wrapped array) or []
-  const res = await fetch(withBase(`/results/${encodeURIComponent(patientId)}`), {
+  const res = await fetch(withBase(`/doctor/patient/result/${encodeURIComponent(patientId)}`), {
     headers: authHeaders(),
   });
   return handle(res);

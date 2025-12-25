@@ -11,7 +11,7 @@ export default function FileInput({
 }) {
   return (
     <div className="w-full">
-      <label className={`flex items-center gap-2 cursor-pointer rounded-md border ${error ? "border-red-400 ring-1 ring-red-400" : "border-gray-200"} bg-white/90 px-3 py-2 shadow-sm hover:bg-white`}> 
+      <label className={`flex items-center gap-2 cursor-pointer rounded-md border ${error ? "border-red-400 ring-1 ring-red-400" : "border-none"} bg-white/90 px-3 py-2 shadow-sm hover:bg-white`}>
         {Icon ? <Icon className="h-5 w-5 text-gray-400" /> : null}
         <span className="text-sm text-gray-700 flex-1 truncate">{hint || "Choose a file"}</span>
         <input

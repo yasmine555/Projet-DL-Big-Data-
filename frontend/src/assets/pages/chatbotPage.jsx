@@ -15,13 +15,12 @@ export default function ChatbotPage() {
   }, [patientId]);
 
   return (
-    <div className="flex flex-col h-[100vh]">
-      <div className="pointer-events-none absolute inset-0 bg-neutral-100" />
+    <div className="flex flex-col h-full m-0">
+      <div className="pointer-events-none absolute inset-0 " />
 
       <ResNav />
       <main className="flex-grow pt-20 px-10">
         <div className="max-w-5xl mx-auto h-full py-6">
-          <h2 className="text-2xl font-bold text-gray-800 mb-4">AI Medical Assistant</h2>
           <Chatbot containerClass="h-[calc(100vh-200px)]" />
         </div>
       </main>

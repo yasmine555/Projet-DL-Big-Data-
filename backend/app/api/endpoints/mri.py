@@ -59,6 +59,19 @@ async def analyze_patient_mri(
         try:
             analyzer = get_mri_analyzer()
             analysis_result = analyzer.predict(file_content)
+            
+            # Save XAI image if available
+            xai_url = None
+            if analysis_result.get("xai_image") is not None:
+                from PIL import Image as PILImage
+                xai_img_np = analysis_result["xai_image"]
+                xai_pil = PILImage.fromarray(xai_img_np)
+                
+                xai_filename = f"xai_{unique_filename.split('.')[0]}.png"
+                xai_path = UPLOAD_DIR / xai_filename
+                xai_pil.save(xai_path)
+                xai_url = f"/uploads/mri/{xai_filename}"
+                
         except Exception as e:
             logger.error(f"MRI analysis failed: {e}")
             # If analysis fails, still save the file but return error in analysis
@@ -69,6 +82,7 @@ async def analyze_patient_mri(
                 "class_index": -1,
                 "error": str(e)
             }
+            xai_url = None
         
         # Store MRI scan metadata in database
         database = await db.get_db()
@@ -76,6 +90,7 @@ async def analyze_patient_mri(
             "patient_id": patient_id,
             "doctor_id": doctor_id,
             "image_url": image_url,
+            "xai_url": xai_url,
             "prediction_class": analysis_result.get("prediction_class"),
             "confidence": analysis_result.get("confidence"),
             "probabilities": analysis_result.get("probabilities", {}),
@@ -94,6 +109,7 @@ async def analyze_patient_mri(
                 "$set": {
                     "imaging_findings": analysis_result.get("prediction_class"),
                     "mri_image_url": image_url,
+                    "mri_xai_url": xai_url,
                     "updated_at": datetime.utcnow()
                 }
             }
@@ -104,6 +120,7 @@ async def analyze_patient_mri(
         return {
             "success": True,
             "image_url": image_url,
+            "xai_url": xai_url,
             "prediction_class": analysis_result.get("prediction_class"),
             "confidence": analysis_result.get("confidence"),
             "probabilities": analysis_result.get("probabilities", {}),

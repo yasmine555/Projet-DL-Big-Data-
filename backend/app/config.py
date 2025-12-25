@@ -1,37 +1,23 @@
-import http
 import os
 from pathlib import Path
 import torch
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 PDF_DIR = os.getenv("PDF_DIR", str(BASE_DIR / "data" / "docs"))
-OUT_DIR = os.getenv("OUT_DIR", str(BASE_DIR / "data" / "processed"))
-# Optional: use separate test artifacts without touching production
-USE_TEST_ARTIFACTS = os.getenv("USE_TEST_ARTIFACTS", "false").lower() in ("1", "true", "yes")
-TEST_OUT_DIR = os.getenv("TEST_OUT_DIR", str(BASE_DIR / "data" / "processed_test"))
-ACTIVE_OUT_DIR = TEST_OUT_DIR if USE_TEST_ARTIFACTS else OUT_DIR
-CHUNK_DIR = os.path.join(OUT_DIR, "chunks")
+OUT_DIR = os.getenv("OUT_DIR", str(BASE_DIR / "data" / "processed_enhanced"))
 
-# Fixed: Define INDEX_PATH before using it
-INDEX_PATH = os.path.join(ACTIVE_OUT_DIR, "embeddings.npy")
-NODES_PATH = os.path.join(ACTIVE_OUT_DIR, "nodes.json")
+
 
 os.makedirs(PDF_DIR, exist_ok=True)
 os.makedirs(OUT_DIR, exist_ok=True)
-os.makedirs(TEST_OUT_DIR, exist_ok=True)
-os.makedirs(CHUNK_DIR, exist_ok=True)
-os.makedirs(os.path.dirname(INDEX_PATH), exist_ok=True)
-os.makedirs(os.path.dirname(NODES_PATH), exist_ok=True)
-
-CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 500))
-OVERLAP_SIZE = int(os.getenv("OVERLAP_SIZE", 100))
+UPLOAD_DIR=os.getenv("UPLOAD_DIR", str(BASE_DIR / "uploads"))
+KG_PATH=os.getenv("KG_PATH", str(BASE_DIR / "data" / "processed_enhanced" / "knowledge_graph.json"))
+CHROMA_DB=os.getenv("CHROMA_DB", str(BASE_DIR / "data" / "chroma_db"))
 EMBEDDING_MODEL_NAME = "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 GEN_MODEL_NAME ="openai/gpt-oss-120b"
-TOP_K_RETRIEVAL=15
-MAX_TOKENS=1024
-MRI_MODEL_PATH = os.getenv("MRI_MODEL_PATH", str(BASE_DIR /"app"/ "models" / "best_model.h5"))
-IMAGE_PATH= os.getenv("IMAGE_PATH", str(BASE_DIR / "data" / "mri_image"))
+
+CLASSIFICATION_MODEL = os.getenv("MRI_MODEL_PATH", str(BASE_DIR /"app"/ "models" / "best_model.h5"))
 # Directory to store uploaded MRI images (served via /uploads)
 MRI_UPLOAD_DIR = os.getenv("MRI_UPLOAD_DIR", str(BASE_DIR / "app" / "uploads" / "mri"))
 os.makedirs(MRI_UPLOAD_DIR, exist_ok=True)
@@ -51,17 +37,12 @@ if BaseSettings is not None:
     class Settings(BaseSettings):
         base_dir: str = str(BASE_DIR)
         pdf_dir: str = PDF_DIR
-        out_dir: str = ACTIVE_OUT_DIR
-        chunk_dir: str = CHUNK_DIR
-        index_path: str = INDEX_PATH
-        nodes_path: str = NODES_PATH
-        chunk_size: int = CHUNK_SIZE
-        overlap_size: int = OVERLAP_SIZE
+        out_dir: str = OUT_DIR
+
         embedding_model_name: str = EMBEDDING_MODEL_NAME
         device: str = str(DEVICE)
         gen_model_name: str = GEN_MODEL_NAME
-        top_k_retrieval: int = TOP_K_RETRIEVAL
-        max_tokens: int = MAX_TOKENS
+
 
         # runtime
         ENVIRONMENT: str = ENVIRONMENT
@@ -78,17 +59,11 @@ else:
     class _SimpleSettings:
         base_dir = str(BASE_DIR)
         pdf_dir = PDF_DIR
-        out_dir = ACTIVE_OUT_DIR
-        chunk_dir = CHUNK_DIR
-        index_path = INDEX_PATH
-        nodes_path = NODES_PATH
-        chunk_size = CHUNK_SIZE
-        overlap_size = OVERLAP_SIZE
+        out_dir = OUT_DIR
         embedding_model_name = EMBEDDING_MODEL_NAME
         device = str(DEVICE)
         gen_model_name = GEN_MODEL_NAME
-        top_k_retrieval = TOP_K_RETRIEVAL
-        max_tokens = MAX_TOKENS
+
         # runtime
         ENVIRONMENT = ENVIRONMENT
         HOST = HOST
@@ -96,4 +71,5 @@ else:
         DEBUG = DEBUG
 
     settings = _SimpleSettings()
+
 N8N_WEBHOOK_URL="http://localhost:5678/webhook/doctor-events"

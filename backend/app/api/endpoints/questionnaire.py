@@ -2,19 +2,22 @@ from fastapi import APIRouter, Request, HTTPException, Header, Depends
 from typing import List, Optional
 from app.models.requests import QuestionnaireRequest
 from app.models.responses import QuestionnaireResponse, SourceInfo, EvaluationMetrics
-from app.core.alzheimer_rag_system import PatientContext, UserType, AlzheimerRAGSystem
-from app.services.ragas_evaluator import RAGASEvaluator
+
+
 from app.models.db import get_db, COL_RESULTS
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from .auth import require_doctor
 import datetime
+from bson import ObjectId
 import logging
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+from dotenv import load_dotenv
+load_dotenv()
 
-# GET /results/{patient_id}
-@router.get("/results/{patient_id}")
+
+@router.get("/doctor/patient/result/{patient_id}")
 async def get_patient_results(
     patient_id: str,
     db: AsyncIOMotorDatabase = Depends(get_db),
@@ -32,19 +35,22 @@ async def get_patient_results(
         )
         
         if not result:
-            # Return empty list to match frontend expectation (api.js expects array)
             return []
             
-        # Transform to match frontend expectation
-        # api.js expects: { answer, confidence, key_findings, recommendations, citations: [{title,url,snippet}] }
-        # But the frontend actually handles the raw result object if it matches the structure.
-        # Let's return a list containing the result document.
-        
-        # Convert ObjectId to string if needed (though find_one usually returns dict)
-        if "_id" in result:
-            result["_id"] = str(result["_id"])
-            
-        return [result]
+        # Helper to serialize Mongo types
+        def serialize_doc(doc):
+            if not doc: return doc
+            doc["_id"] = str(doc["_id"])
+            for k, v in doc.items():
+                if isinstance(v, (datetime.datetime, datetime.date)):
+                    doc[k] = v.isoformat()
+                if isinstance(v, ObjectId):
+                    doc[k] = str(v)
+            return doc
+
+        # Serialize results
+        serialized_result = serialize_doc(result)
+        return [serialized_result]
         
     except Exception as e:
         logger.error(f"Error retrieving results for patient {patient_id}: {e}")
@@ -59,26 +65,30 @@ async def submit_questionnaire(
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
     """
-    Accepts: { responses: [...], metadata: {...} }
-    Returns: structured risk assessment and a RAG-generated summary (if RAG available)
+    Accepts: { responses: [...], metadata: {...}, patient_id: ... }
+    Returns: structured risk assessment and summary
     """
-    # Basic validation (Pydantic ensures non-empty responses)
+    # Basic validation
     if not payload.responses or len(payload.responses) == 0:
         raise HTTPException(status_code=400, detail="Responses are required")
 
-    # Build patient context
+    # Build patient context dict
     md = payload.metadata
-    patient_ctx = PatientContext(
-        age=md.age,
-        symptoms=md.symptoms_list or [],
-        medical_history=md.medical_history or [],
-        current_medications=md.current_medications or [],
-        mmse_score=md.mmse_score,
-        moca_score=md.moca_score,
-        biomarkers=md.biomarkers.dict() if hasattr(md.biomarkers, "dict") else (md.biomarkers or {})
-    )
+    patient_context = {
+        "age": md.age,
+        "sex": md.sex,
+        "symptoms_list": md.symptoms_list or [],
+        "medical_history": md.medical_history or [],
+        "current_medications": md.current_medications or [],
+        "mmse_score": md.mmse_score,
+        "moca_score": md.moca_score,
+        "biomarkers": md.biomarkers.dict() if hasattr(md.biomarkers, "dict") else (md.biomarkers or {}),
+        "imaging_findings": md.imaging_findings,
+        "education_level": md.education_level,
+        "family_history": md.family_history
+    }
 
-    # Simple risk heuristic: proportion positive answers (assumes binary 0/1)
+    # Simple risk heuristic: proportion positive answers
     try:
         raw_score = (sum(int(bool(x)) for x in payload.responses) / len(payload.responses)) * 100.0
     except Exception:
@@ -87,97 +97,144 @@ async def submit_questionnaire(
     normalized = max(0.0, min(1.0, raw_score / 100.0))
     interpretation = "low" if normalized < 0.33 else ("medium" if normalized < 0.66 else "high")
 
-    # Attempt to call RAG system for a short clinical summary and evidence
-    rag = getattr(request.app.state, "rag_system", None)
-    summary_text = None
-    sources_list: List[SourceInfo] = []
-    eval_metrics = None
-    rag_result = {}
+    # Generate AI summary using direct API call (bypass agent for performance)
+    from openai import OpenAI
+    import os
+    
+    openrouter_key = os.getenv("OPENROUTER_API_KEY")
+    if not openrouter_key:
+        raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY not configured")
+    
+    client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=openrouter_key,
+    )
+    
+    # Build concise patient summary prompt
+    summary_prompt = f"""You are a clinical decision support assistant.
 
-    if rag is not None:
-        # Updated query for natural response
-        query_text = (
-            "Generate a natural, coherent clinical summary for this patient profile, including "
-            "insights on possible diagnoses, risks, and personalized recommendations. Respond in "
-            "flowing paragraphs without forced headings."
+Generate a CONCISE clinical summary (4-5 sentences maximum) for this patient:
+
+Patient Information:
+- Age: {md.age or 'Not provided'}
+- Sex: {md.sex or 'Not provided'}
+- Symptoms: {', '.join(md.symptoms_list) if md.symptoms_list else 'None reported'}
+- MMSE Score: {md.mmse_score if md.mmse_score is not None else 'Not tested'}
+- MoCA Score: {md.moca_score if md.moca_score is not None else 'Not tested'}
+- MRI Finding: {md.imaging_findings or 'No imaging yet'}
+- Medical History: {', '.join(md.medical_history) if md.medical_history else 'None'}
+- Risk Level: {interpretation} ({raw_score:.1f}%)
+
+Provide:
+1. Key clinical findings
+2. Most likely concern or diagnosis
+3. Top 2-3 recommendations
+
+Be direct and actionable."""
+
+    # Extract patient_id early for logging
+    patient_id = payload.patient_id or (md.extra.get("patient_id") if md and md.extra else "unknown")
+
+    logger.info(f"Generating AI summary for patient {patient_id}")
+    try:
+        response_ai = client.chat.completions.create(
+            model="nvidia/nemotron-3-nano-30b-a3b:free",
+            temperature=0.2,
+            max_tokens=1000,
+            messages=[
+                {"role": "system", "content": "You are a compassionate medical assistant providing concise clinical insights."},
+                {"role": "user", "content": summary_prompt}
+            ]
         )
-        rag_result = rag.query(
-            user_query=query_text,
-            user_type=UserType.PATIENT if (md.user_type or "patient") == "patient" else UserType.DOCTOR,
-            patient_context=patient_ctx,
-            explain=True
-        )
-        summary_text = rag_result.get("answer") or rag_result.get("summary")
-        # Build sources
-        for s in rag_result.get("evidence", []):
-            sources_list.append(SourceInfo(
-                title=s.get("document_title", "Unknown"),
-                page=s.get("page_number", None),
-                relevance=s.get("score", 0.0),
-                type=s.get("content_type", "text")
-            ))
-        # Evaluate the RAG response using SimpleEvaluator (if available)
+        summary_text = response_ai.choices[0].message.content
+        logger.info("AI summary generated successfully")
+    except Exception as e:
+        logger.error(f"AI summary generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"AI summary generation failed: {str(e)}")
+
+    # Determine if we need to create a new patient (anonymous/temp user)
+    # Check if patient_id is missing, "unknown", or starts with "temp_"
+    created_patient_id = None
+    if not patient_id or patient_id == "unknown" or str(patient_id).startswith("temp_"):
+        logger.info(f"Creating new patient record for anonymous user (id provided: {patient_id})")
+        new_patient_doc = {
+            "name": md.name or "Anonymous Patient",
+            "age": md.age,
+            "sex": md.sex,
+            "medical_history": ', '.join(md.medical_history) if md.medical_history else "",
+            "family_history": str(md.family_history) if md.family_history else "",
+            "symptoms_list": md.symptoms_list,
+            "education_level": md.education_level,
+            "mmse_score": md.mmse_score,
+            "moca_score": md.moca_score,
+            "biomarkers": md.biomarkers.dict() if hasattr(md.biomarkers, "dict") else {},
+            "created_at": datetime.datetime.utcnow(),
+            "updated_at": datetime.datetime.utcnow(),
+            "doctor_id": "system",
+            "is_anonymous": True
+        }
+        
         try:
-            # evaluator = Evaluator() # Evaluator not imported/defined in this scope
-            # eval_res = evaluator.evaluate(query_text, summary_text or "", rag_result.get("evidence", []), k=5)
-            # eval_metrics = eval_res.__dict__
+            from app.models.db import COL_PATIENTS
+            new_p = await db[COL_PATIENTS].insert_one(new_patient_doc)
+            patient_id = str(new_p.inserted_id)
+            created_patient_id = patient_id
+            logger.info(f"Created new patient with ID: {patient_id}")
+        except Exception as e:
+            logger.error(f"Failed to create patient record: {e}")
+            # Fallback to temp ID if insertion fails, but this defeats the purpose
             pass
-        except Exception:
-            eval_metrics = None
 
-    # Build response payload
+    # Build response
     response = QuestionnaireResponse(
         risk_score=raw_score,
         normalized=normalized,
         interpretation=interpretation,
-        summary=summary_text or f"Preliminary risk appears {interpretation}. Consider clinical assessment for confirmation.",
-        details={"patient_context": patient_ctx.__dict__, "evaluator": eval_metrics} if eval_metrics else {"patient_context": patient_ctx.__dict__},
-        sources=sources_list
+        summary=summary_text,
+        details={"patient_context": patient_context},
+        sources=[], # No RAG sources for now
+        created_patient_id=created_patient_id
     )
     
-    # Persist questionnaire result
-    # We try to persist if we have a patient_id, regardless of doctor auth (for now) to ensure data is saved.
-    # But ideally we should link it to a doctor if possible.
+    # Persist result
+    # Persist result
+    logger.info("Attempting to persist result...")
     try:
         doctor_id = "system"
         if authorization:
             try:
-                # Try to get user/doctor info but don't block if it fails
-                # We can use a simpler token decode or just assume system if auth fails
-                # For now, let's try to get the doctor if we can
-                # doctor = await require_doctor(authorization=authorization)
-                # doctor_id = doctor["sub"]
-                pass
-            except Exception:
-                pass
+                doctor = await require_doctor(authorization=authorization)
+                doctor_id = doctor["sub"]
+            except Exception as e:
+                logger.warning(f"Failed to get doctor info from token: {e}")
         
-        # Check for patient_id in payload or metadata
-        patient_id = payload.patient_id or (md.extra.get("patient_id") if md and md.extra else None)
+        # patient_id was already extracted earlier
         
-        if patient_id:
+        if patient_id and patient_id != "unknown":
             logger.info(f"Persisting result for patient {patient_id}")
             res_doc = {
                 "patient_id": patient_id,
                 "doctor_id": doctor_id,
-                "summary": (summary_text or response.summary),
-                "answer": summary_text or None,
-                "confidence": response.normalized,
+                "summary": summary_text,
+                "answer": summary_text,
+                "confidence": normalized,
                 "query_type": "questionnaire",
-                "risk_score": response.risk_score,
-                "interpretation": response.interpretation,
-                "sources": [s.dict() for s in sources_list],
-                "reasoning_trace": rag_result.get("reasoning_trace", []),
+                "risk_score": raw_score,
+                "interpretation": interpretation,
+                "sources": [],
+                "reasoning_trace": [],
                 "created_at": datetime.datetime.utcnow()
             }
-            await db[COL_RESULTS].insert_one(res_doc)
-            logger.info("Result persisted successfully")
+            inserted = await db[COL_RESULTS].insert_one(res_doc)
+            logger.info(f"Result persisted successfully with ID {inserted.inserted_id}")
         else:
-            logger.warning("No patient_id provided, result not persisted")
+            logger.warning(f"No valid patient_id provided (got '{patient_id}'), result not persisted")
             
     except Exception as e:
         logger.error(f"Failed to persist questionnaire result: {e}")
-        # Do not fail the API on persistence errors
-        pass
+        # Do not fail the API on persistence errors. Log it loudly.
+
+    return response
 
     return response
 

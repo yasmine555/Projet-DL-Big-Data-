@@ -34,6 +34,7 @@ backend/uploads/
 backend/.env
 frontend/.env
 backend/venv
+backend/data/docs
 
 # Python - virtual envs & caches
 backend/venv/
@@ -61,9 +62,11 @@ backend/data/processed_enhanced/knowledge_graph.json
 backend/data/processed_enhanced/processing_stats.json
 
 # Models and large binaries (track via LFS if needed)
-backend/app/models/*.h5
-backend/models/**
-
+*.h5
+*.pth
+backend/data/chroma_db/
+backend/app/models/best_model*
+backend/app/models/resnet50_best*
 # Docker & local runtime
 docker-compose.override.yml
 .python-version

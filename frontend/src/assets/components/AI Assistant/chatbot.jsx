@@ -1,11 +1,42 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useImmer } from 'use-immer';
 import ChatMessages from './chatMessages';
 import ChatInput from './chatInput';
 
+import { askQuery } from '../../../services/api';
+
+import { useParams } from 'react-router-dom';
+
 function Chatbot() {
+    const { patientId } = useParams();
     const [messages, setMessages] = useImmer([]);
     const [newMessage, setNewMessage] = useState('');
+
+    // Load chat history from sessionStorage on mount
+    useEffect(() => {
+        if (!patientId) return;
+
+        const storageKey = `chat_history_${patientId}`;
+        const savedHistory = sessionStorage.getItem(storageKey);
+
+        if (savedHistory) {
+            try {
+                const parsedHistory = JSON.parse(savedHistory);
+                setMessages(parsedHistory);
+                console.log('Loaded chat history:', parsedHistory.length, 'messages');
+            } catch (e) {
+                console.error('Failed to load chat history:', e);
+            }
+        }
+    }, [patientId]);
+
+    // Save chat history to sessionStorage whenever messages change
+    useEffect(() => {
+        if (!patientId || messages.length === 0) return;
+
+        const storageKey = `chat_history_${patientId}`;
+        sessionStorage.setItem(storageKey, JSON.stringify(messages));
+    }, [messages, patientId]);
 
     const isLoading = messages.length > 0 && messages[messages.length - 1].loading;
 
@@ -20,23 +51,20 @@ function Chatbot() {
         setNewMessage('');
 
         try {
-            const response = await fetch('http://localhost:8002/ask', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ query: trimmedMessage }),
+            // Use the centralized API client which handles BASE URL and auth
+            const userType = localStorage.getItem('userType') || 'patient';
+            const data = await askQuery({
+                query: trimmedMessage,
+                user_type: userType,
+                patient_id: patientId, // Pass patient_id for context-aware answers
+                explain: true
             });
-
-            if (!response.ok) {
-                throw new Error('Network response was not ok');
-            }
-
-            const data = await response.json();
 
             setMessages(draft => {
                 const lastMsg = draft[draft.length - 1];
-                lastMsg.content = data.response;
+                // The backend returns { answer: "...", ... } or { response: "..." } depending on endpoint
+                // query.py returns EnhancedResponse which has 'answer'
+                lastMsg.content = data.answer || data.response || "No response received.";
                 lastMsg.loading = false;
             });
 
@@ -46,30 +74,30 @@ function Chatbot() {
                 const lastMsg = draft[draft.length - 1];
                 lastMsg.loading = false;
                 lastMsg.error = true;
-                lastMsg.content = "Sorry, something went wrong.";
+                lastMsg.content = "Sorry, something went wrong. Please check your connection.";
             });
         }
     }
 
     return (
-        <div className='relative grow flex flex-col gap-6 pt-6 h-[80vh]'>
-            {messages.length === 0 && (
-                <div className='mt-3 font-urbanist text-primary-blue text-xl font-semibold space-y-2 text-center'>
-                    <p> Welcome!</p>
-                    <p>I am NeuroAI Assistant</p>
-                    <p>Ask me about Symptoms, Treatments, or Medical Conditions related to ALzheimer.</p>
-                </div>
-            )}
-            <ChatMessages
-                messages={messages}
-                isLoading={isLoading}
-            />
+        <div className='relative grow flex flex-col-reverse gap-6 pb-6 mb-5 '>
             <ChatInput
                 newMessage={newMessage}
                 isLoading={isLoading}
                 setNewMessage={setNewMessage}
                 submitNewMessage={submitNewMessage}
             />
+            <ChatMessages
+                messages={messages}
+                isLoading={isLoading}
+            />
+            {messages.length === 0 && (
+                <div className='mb-3 font-urbanist text-primary-blue text-xl font-semibold space-y-2 text-center'>
+                    <p> Welcome!</p>
+                    <p>I am NeuroAI Assistant</p>
+                    <p>Ask me about Symptoms, Treatments, or Medical Conditions related to ALzheimer.</p>
+                </div>
+            )}
         </div>
     );
 }

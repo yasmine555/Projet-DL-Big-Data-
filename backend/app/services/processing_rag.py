@@ -1,6 +1,7 @@
 """
 Enhanced Medical RAG Pipeline for Alzheimer's Disease.
 Focuses on chunking, embeddings, entity/relationship extraction, and retrieval.
+Now uses ChromaDB for vector storage (Local, No Docker).
 """
 
 import os
@@ -10,6 +11,8 @@ import numpy as np
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional, Set
 from collections import defaultdict
+import shutil
+
 
 try:
     from tqdm import tqdm
@@ -25,17 +28,114 @@ except Exception:
 
 # Embeddings
 from sentence_transformers import SentenceTransformer
+
+# PyMuPDF for better title extraction
+try:
+    import fitz  # PyMuPDF
+except Exception:
+    fitz = None
+
+# ... (imports continue)
+
+def extract_pdf_title(fp: Path) -> Optional[str]:
+    """
+    Extract a human-readable title from PDF.
+    Priority 1: PyMuPDF (looking for largest font on page 1).
+    Priority 2: PDF Metadata.
+    Priority 3: First meaningful line.
+    """
+    title_candidate = None
+    
+    # Method 1: PyMuPDF (Font Size Analysis)
+    if fitz:
+        try:
+            doc = fitz.open(fp)
+            if len(doc) > 0:
+                page = doc[0]
+                blocks = page.get_text("dict")["blocks"]
+                
+                max_size = 0
+                best_text = ""
+                
+                for block in blocks:
+                    if "lines" not in block:
+                        continue
+                    for line in block["lines"]:
+                        for span in line["spans"]:
+                            # Check for reasonable text
+                            text = span["text"].strip()
+                            if not text or len(text) < 5:
+                                continue
+                            
+                            # Font size heuristic
+                            if span["size"] > max_size:
+                                max_size = span["size"]
+                                best_text = text
+                            elif span["size"] == max_size:
+                                # Append if same size (multi-line title)
+                                best_text += " " + text
+                
+                if best_text and max_size > 14: # Assuming titles are larger than normal text (~10-12)
+                    # Clean up
+                    best_text = clean_text(best_text)
+                    if 5 < len(best_text) < 250:
+                        return best_text
+        except Exception as e:
+            print(f"PyMuPDF extraction failed: {e}")
+
+    # Method 2: pypdf Metadata & Heuristics (Playback)
+    if PdfReader:
+        try:
+            reader = PdfReader(str(fp))
+            meta = getattr(reader, "metadata", None) or {}
+            
+            # Metadata Check
+            if isinstance(meta, dict):
+                meta_title = meta.get("/Title") or meta.get("Title")
+            else:
+                meta_title = getattr(meta, "title", None)
+                
+            if meta_title:
+                cleaned = str(meta_title).strip()
+                bad_titles = ["untitled", "microsoft word", "document", "presentation", "slide", "pdf"]
+                if cleaned and 5 < len(cleaned) < 200 and not any(b in cleaned.lower() for b in bad_titles):
+                    return cleaned
+
+            # Fallback text analysis (if PyMuPDF wasn't used/failed)
+            if reader.pages:
+                first_text = (reader.pages[0].extract_text() or "").strip()
+                if first_text:
+                    lines = first_text.splitlines()
+                    junk_patterns = [
+                        r'^(https?://|www\.)', r'^\d+$', r'^[A-Z]{2,}\s*\d+', 
+                        r'^(doi|DOI|arxiv|ISSN)', r'^(page|Page)\s+\d+', r'^\d{4}-\d{4}', 
+                        r'^[©®™]', r'^(Received|Accepted|Published|Available online)', 
+                        r'^(Journal|Volume|Issue|Vol\.|No\.)', r'^[A-Z][a-z]+ \d{4}', 
+                        r'^Copyright', r'^Elsevier', r'^Springer'
+                    ]
+                    
+                    for line in lines[:20]:
+                        line = line.strip()
+                        if len(line) < 5: continue
+                        if any(re.match(p, line, re.IGNORECASE) for p in junk_patterns): continue
+                        if 10 <= len(line) <= 150 and re.search(r"[A-Za-z]", line):
+                            if "@" in line or line.endswith("."): continue
+                            if line.isupper() or re.search(r"[A-Z][a-z]", line):
+                                return line
+        except Exception:
+            pass
+            
+    return None
 from typing import Literal
 
-# Weaviate vector database
+# ChromaDB vector database
 try:
-    import weaviate
-    from weaviate.classes.config import Configure, Property, DataType
-    from weaviate.classes.query import MetadataQuery
-    WEAVIATE_AVAILABLE = True
+    import chromadb
+    from chromadb.config import Settings
+    CHROMA_AVAILABLE = True
 except Exception:
-    WEAVIATE_AVAILABLE = False
-    print("  weaviate-client not available. Install: pip install weaviate-client")
+    CHROMA_AVAILABLE = False
+    print("  chromadb not available. Install: pip install chromadb")
 
 # HuggingFace biomedical NER (lightweight alternative to spaCy)
 try:
@@ -55,11 +155,11 @@ OVERLAP = 250
 BATCH_SIZE = 32 
 TOPK_SEARCH = 40
 TOPK_RERANK = 10 
-MIN_RELEVANCE = 0.55  # 
+MIN_RELEVANCE = 0.55  
 
-# Weaviate Configuration
-WEAVIATE_URL = "http://localhost:8081"  # Local Weaviate instance (port 8081 to avoid conflict)
-WEAVIATE_COLLECTION = "MedicalDocuments"
+# ChromaDB Configuration
+CHROMA_DB_DIR = "data/chroma_db"
+COLLECTION_NAME = "medical_documents"
 
 # ----------------------
 # Medical Entity Patterns (Enhanced & Expanded)
@@ -171,12 +271,7 @@ def read_pdf_text(fp: Path) -> Tuple[str, int]:
 
 
 def extract_pdf_title(fp: Path) -> Optional[str]:
-    """Extract a human-readable title from PDF metadata or first page.
-
-    Priority:
-    1) PDF metadata title
-    2) First non-empty line from first page that looks like a title (<= 200 chars)
-    """
+    """Extract a human-readable title from PDF metadata or first page."""
     if PdfReader is None:
         return None
     try:
@@ -187,49 +282,80 @@ def extract_pdf_title(fp: Path) -> Optional[str]:
             title = meta.get("/Title") or meta.get("Title")
         else:
             title = getattr(meta, "title", None)
+            
+        # 1. Trust Metadata if it looks good
         if title:
             cleaned = str(title).strip()
-            if cleaned and cleaned.lower() not in ["untitled", "microsoft word", "document"]:
+            # Filter out common default/bad titles
+            bad_titles = ["untitled", "microsoft word", "document", "presentation", "slide", "pdf"]
+            if cleaned and 5 < len(cleaned) < 200 and not any(b in cleaned.lower() for b in bad_titles):
                 return cleaned
 
-        # Extract from first page
+        # 2. Extract from first page text
         if reader.pages:
             first_text = (reader.pages[0].extract_text() or "").strip()
             if first_text:
-                # Skip common junk patterns
+                lines = first_text.splitlines()
+                
+                # Enhanced Junk Patterns (Header noise to skip)
                 junk_patterns = [
-                    r'^(https?://|www\.)',  # URLs
-                    r'^\d+$',  # Just numbers
-                    r'^[A-Z]{2,}\s*\d+',  # Document codes like "PMC123456"
-                    r'^(doi|DOI|arxiv)',  # DOI/arxiv prefixes
-                    r'^(page|Page)\s+\d+',  # Page numbers
-                    r'^\d{4}-\d{4}',  # ISSNs
-                    r'^[©®™]',  # Copyright symbols
+                    r'^(https?://|www\.)',       # URLs
+                    r'^\d+$',                    # Just numbers
+                    r'^[A-Z]{2,}\s*\d+',         # Document codes "PMC123"
+                    r'^(doi|DOI|arxiv|ISSN)',    # Identifiers
+                    r'^(page|Page)\s+\d+',       # Page numbers
+                    r'^\d{4}-\d{4}',             # Date ranges/ISSNs
+                    r'^[©®™]',                   # Copyright
+                    r'^(Received|Accepted|Published|Available online)', # Manuscript status
+                    r'^(Journal|Volume|Issue|Vol\.|No\.)', # Journal headers
+                    r'^[A-Z][a-z]+ \d{4}',       # Date-like lines e.g. "January 2024"
+                    r'^Copyright',
+                    r'^Elsevier',
+                    r'^Springer',
                 ]
                 
-                for line in first_text.splitlines():
+                candidates = []
+                
+                for line in lines[:20]: # Check first 20 lines only
                     line = line.strip()
-                    if not line or len(line) < 10:
+                    if not line or len(line) < 5:
                         continue
-                    
-                    # Skip junk patterns
+                        
+                    # Skip junk
                     if any(re.match(pattern, line, re.IGNORECASE) for pattern in junk_patterns):
                         continue
                     
-                    # Look for title-like lines (10-200 chars, contains letters)
-                    if 10 <= len(line) <= 200 and re.search(r"[A-Za-z]", line):
-                        # Prefer lines with title case or sentence case
-                        if re.search(r"[A-Z][a-z]", line):
-                            return line
-                
-                # Fallback: return first reasonable line
-                for line in first_text.splitlines():
-                    line = line.strip()
-                    if 10 <= len(line) <= 200 and re.search(r"[A-Za-z]", line):
-                        return line
+                    # Heuristics for a Good Title:
+                    # 1. Length: 10-150 chars
+                    # 2. Content: mostly letters
+                    # 3. Logic: Doesn't end with a period (usually)
+                    # 4. Filter: Not an email list
+                    
+                    if 10 <= len(line) <= 150 and re.search(r"[A-Za-z]", line):
+                        if "@" in line: # Skip email lines
+                            continue
+                        if line.endswith("."): # Titles rarely end in periods
+                            continue
+                            
+                        # High priority: All CAPS or Title Case
+                        score = 0
+                        if line.isupper(): score += 2
+                        if re.search(r"[A-Z][a-z]", line): score += 1
                         
-                # Last resort: first 120 chars
-                return first_text[:120]
+                        candidates.append((score, line))
+                
+                # Return best candidate
+                if candidates:
+                    # Sort by score desc, then position asc (prefer earlier lines if tie)
+                    # Actually stable sort by score is enough if we reverse
+                    candidates.sort(key=lambda x: x[0], reverse=True)
+                    return candidates[0][1]
+                    
+                # Last resort fallback: First non-empty line
+                for line in lines:
+                    if len(line.strip()) > 10:
+                        return line.strip()
+
     except Exception:
         return None
     return None
@@ -307,74 +433,58 @@ def stable_id(doc_name: str, chunk_index: int) -> str:
 
 
 # ----------------------
-# Weaviate Client Management
+# ChromaDB Client Management
 # ----------------------
 
-# Global cache for Weaviate client
-_WEAVIATE_CLIENT = None
+_CHROMA_CLIENT = None
+_CHROMA_COLLECTION = None
 
-def get_weaviate_client(url: str = WEAVIATE_URL):
-    """Get or create cached Weaviate client instance"""
-    global _WEAVIATE_CLIENT
+def get_chroma_client(db_path: str = CHROMA_DB_DIR):
+    """Get or create cached ChromaDB client instance"""
+    global _CHROMA_CLIENT
     
-    if _WEAVIATE_CLIENT is not None:
-        return _WEAVIATE_CLIENT
+    if _CHROMA_CLIENT is not None:
+        return _CHROMA_CLIENT
     
-    if not WEAVIATE_AVAILABLE:
-        print(" Weaviate client not available. Please install: pip install weaviate-client")
+    if not CHROMA_AVAILABLE:
+        print(" ChromaDB not available. Please install: pip install chromadb")
         return None
     
     try:
-        print(f"Connecting to Weaviate at {url}...")
-        client = weaviate.connect_to_local(host="localhost", port=8081)
+        # Resolve absolute path for db_dir relative to project root
+        # Assuming this script is in backend/app/services/
+        # Project root is backend/
+        root_dir = Path(__file__).parent.parent.parent
+        abs_db_path = str(root_dir / db_path)
         
-        if client.is_ready():
-            print(" Connected to Weaviate successfully")
-            _WEAVIATE_CLIENT = client
-            return client
-        else:
-            print(" Weaviate is not ready. Make sure Docker container is running.")
-            return None
+        print(f"Connecting to ChromaDB at {abs_db_path}...")
+        client = chromadb.PersistentClient(path=abs_db_path)
+        _CHROMA_CLIENT = client
+        return client
     except Exception as e:
-        print(f" Failed to connect to Weaviate: {e}")
-        print("   Make sure Weaviate is running: docker-compose -f docker-compose.weaviate.yml up -d")
+        print(f" Failed to connect to ChromaDB: {e}")
         return None
 
-def create_weaviate_schema(client):
-    """Create Weaviate schema for medical documents"""
+def get_chroma_collection(client, collection_name: str = COLLECTION_NAME):
+    """Get or create ChromaDB collection"""
+    global _CHROMA_COLLECTION
+    
+    if _CHROMA_COLLECTION is not None:
+        return _CHROMA_COLLECTION
+
     if client is None:
-        return False
-    
+        return None
+        
     try:
-        # Check if collection already exists
-        if client.collections.exists(WEAVIATE_COLLECTION):
-            print(f"Collection '{WEAVIATE_COLLECTION}' already exists")
-            return True
-        
-        # Create collection with properties
-        client.collections.create(
-            name=WEAVIATE_COLLECTION,
-            properties=[
-                Property(name="text", data_type=DataType.TEXT),
-                Property(name="document_name", data_type=DataType.TEXT),
-                Property(name="document_title", data_type=DataType.TEXT),
-                Property(name="chunk_index", data_type=DataType.INT),
-                Property(name="total_chunks", data_type=DataType.INT),
-                Property(name="page_number", data_type=DataType.INT),
-                Property(name="total_pages", data_type=DataType.INT),
-                Property(name="relevance_score", data_type=DataType.NUMBER),
-                Property(name="entity_counts", data_type=DataType.TEXT),  # JSON string
-                Property(name="has_relations", data_type=DataType.BOOL),
-            ],
-            # We'll provide our own vectors (from SentenceTransformer)
-            vectorizer_config=Configure.Vectorizer.none(),
+        collection = client.get_or_create_collection(
+            name=collection_name,
+            metadata={"hnsw:space": "cosine"} # Use cosine similarity
         )
-        
-        print(f" Created collection '{WEAVIATE_COLLECTION}'")
-        return True
+        _CHROMA_COLLECTION = collection
+        return collection
     except Exception as e:
-        print(f" Failed to create schema: {e}")
-        return False
+        print(f"Failed to get/create Chroma collection: {e}")
+        return None
 
 
 # ----------------------
@@ -499,19 +609,6 @@ def extract_medical_entities_hf(text: str, hf_ner_pipeline, max_len: int = 5000)
         }
     except Exception:
         return {"counts": {}, "entities": {}}
-
-
-def extract_medical_entities_hf_batch(texts: List[str], hf_ner_pipeline, max_len: int = 5000) -> List[Dict[str, Any]]:
-    """Batch extract medical entities from multiple texts (performance optimization)"""
-    if hf_ner_pipeline is None:
-        return [{"counts": {}, "entities": {}} for _ in texts]
-    
-    results = []
-    for text in texts:
-        result = extract_medical_entities_hf(text, hf_ner_pipeline, max_len)
-        results.append(result)
-    
-    return results
 
 
 def boost_score_by_entities(base_score: float, entity_data: Dict[str, Any]) -> float:
@@ -667,9 +764,15 @@ class MedicalKnowledgeGraph:
     
     def export_graph(self, output_path: Path):
         """Export knowledge graph to JSON"""
+        # Convert sets to lists for JSON serialization
+        entities_json = {k: list(v) for k, v in self.entities.items()}
+        # Convert entity_to_docs sets to lists
+        entity_to_docs_json = {k: list(v) for k, v in self.entity_to_docs.items()}
+        
         graph_data = {
-            "entities": {k: list(v) for k, v in self.entities.items()},
+            "entities": entities_json,
             "relations": self.relations,
+            "entity_to_docs": entity_to_docs_json,
             "entity_stats": self.get_entity_stats(),
             "total_relations": len(self.relations)
         }
@@ -746,12 +849,10 @@ def process_documents(
     batch_size: int = BATCH_SIZE,
     ner_mode: Literal["regex", "hf"] = "hf",
     limit: Optional[int] = None
-) -> Tuple[Path, Path, Path, Path]:
+) -> Tuple[Path, Path]:
     """
     Process PDF documents into embeddings and knowledge graph.
-    
-    Args:
-        ner_mode: 'hf' for HuggingFace biomedical NER (recommended), 'regex' for pattern matching only
+    Stores vectors in ChromaDB and exports KG to JSON.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     
@@ -762,12 +863,23 @@ def process_documents(
     print(f"Found {len(pdfs)} PDFs in {pdf_dir}")
     print(f"Chunk size: {max_chars}, overlap: {overlap}")
     print(f"NER mode: {ner_mode}")
+    print(f"Using ChromaDB at {CHROMA_DB_DIR}")
     
     embedder = get_embedder(model_name)
     kg = MedicalKnowledgeGraph()
     
-    all_nodes: List[Dict[str, Any]] = []
-    all_embeddings: List[np.ndarray] = []
+    # Initialize ChromaDB
+    chroma_client = get_chroma_client()
+    if chroma_client is None:
+        raise RuntimeError("ChromaDB unavailable. Cannot proceed.")
+        
+    # Reset/Create collection
+    try:
+        chroma_client.delete_collection(COLLECTION_NAME)
+    except Exception:
+        pass # Collection might not exist
+        
+    collection = get_chroma_collection(chroma_client, COLLECTION_NAME)
     
     hf_ner = None
     if ner_mode == "hf":
@@ -776,6 +888,10 @@ def process_documents(
             print("HuggingFace NER unavailable; falling back to regex")
             ner_mode = "regex"
 
+    total_chunks = 0
+    buffer_nodes = []
+    buffer_embeddings = []
+    
     for pdf_path in tqdm(pdfs, desc="Processing PDFs"):
         try:
             # Extract text
@@ -791,7 +907,6 @@ def process_documents(
             
             # Embed chunks
             chunk_embeddings = embedder.embed_texts(chunks, batch_size=batch_size)
-            all_embeddings.append(chunk_embeddings)
             
             # Process each chunk
             for idx, chunk in enumerate(chunks):
@@ -833,82 +948,59 @@ def process_documents(
                 base_relevance = 0.5
                 relevance = boost_score_by_entities(base_relevance, entities)
                 
-                # Create node
-                node = {
-                    "id": stable_id(pdf_path.name, idx),
-                    "text": chunk,
-                    "metadata": {
-                        "document_name": pdf_path.name,
-                        "document_title": doc_title,
-                        "chunk_index": idx,
-                        "total_chunks": len(chunks),
-                        "page_number": 0,  # Could be enhanced to track actual pages
-                        "total_pages": num_pages,
-                        "content_type": "text",
-                        "relevance_score": float(relevance),
-                        "entity_counts": entities.get("counts", {}),
-                        "has_relations": len(relations) > 0
-                    }
+                # Prepare node data for Chroma
+                node_id = stable_id(pdf_path.name, idx)
+                metadata = {
+                    "document_name": pdf_path.name,
+                    "document_title": doc_title,
+                    "chunk_index": idx,
+                    "total_chunks": len(chunks),
+                    "page_number": 0,
+                    "total_pages": num_pages,
+                    "content_type": "text",
+                    "relevance_score": float(relevance),
+                    "entity_counts": json.dumps(entities.get("counts", {})), # flatten for Chroma
+                    "has_relations": len(relations) > 0
                 }
                 
-                all_nodes.append(node)
+                buffer_nodes.append({
+                    "id": node_id,
+                    "text": chunk,
+                    "metadata": metadata
+                })
+                buffer_embeddings.append(chunk_embeddings[idx])
+                
+                # Flush buffer if full
+                if len(buffer_nodes) >= BATCH_SIZE:
+                    collection.add(
+                        ids=[n["id"] for n in buffer_nodes],
+                        documents=[n["text"] for n in buffer_nodes],
+                        metadatas=[n["metadata"] for n in buffer_nodes],
+                        embeddings=[e.tolist() for e in buffer_embeddings]
+                    )
+                    total_chunks += len(buffer_nodes)
+                    buffer_nodes = []
+                    buffer_embeddings = []
         
         except Exception as e:
             print(f"Error processing {pdf_path.name}: {e}")
             continue
     
+    # Flush remaining buffer
+    if buffer_nodes:
+        collection.add(
+            ids=[n["id"] for n in buffer_nodes],
+            documents=[n["text"] for n in buffer_nodes],
+            metadatas=[n["metadata"] for n in buffer_nodes],
+            embeddings=[e.tolist() for e in buffer_embeddings]
+        )
+        total_chunks += len(buffer_nodes)
+
+    print(f"✅ Stored {total_chunks} chunks in ChromaDB")
     
-    # Connect to Weaviate and create schema
-    weaviate_client = get_weaviate_client()
-    use_weaviate = weaviate_client is not None
-    
-    if use_weaviate:
-        create_weaviate_schema(weaviate_client)
-        collection = weaviate_client.collections.get(WEAVIATE_COLLECTION)
-        
-        # Store all chunks in Weaviate with batch processing
-        print(f"Storing {len(all_nodes)} chunks in Weaviate...")
-        with collection.batch.dynamic() as batch:
-            for idx, node in enumerate(tqdm(all_nodes, desc="Uploading to Weaviate")):
-                # Get corresponding embedding
-                embedding = all_embeddings[idx // len(all_embeddings[0])][idx % len(all_embeddings[0])]
-                
-                # Prepare properties
-                properties = {
-                    "text": node["text"],
-                    "document_name": node["metadata"]["document_name"],
-                    "document_title": node["metadata"]["document_title"],
-                    "chunk_index": node["metadata"]["chunk_index"],
-                    "total_chunks": node["metadata"]["total_chunks"],
-                    "page_number": node["metadata"]["page_number"],
-                    "total_pages": node["metadata"]["total_pages"],
-                    "relevance_score": node["metadata"]["relevance_score"],
-                    "entity_counts": json.dumps(node["metadata"]["entity_counts"]),
-                    "has_relations": node["metadata"]["has_relations"],
-                }
-                
-                # Add object with vector
-                batch.add_object(
-                    properties=properties,
-                    vector=embedding.tolist()
-                )
-        
-        print(f"✅ Stored {len(all_nodes)} chunks in Weaviate")
-    
-    # Save artifacts (backup/fallback)
-    nodes_path = out_dir / "nodes.json"
-    embeddings_path = out_dir / "embeddings.npy"
+    # Save artifacts (Just KG and Stats)
     kg_path = out_dir / "knowledge_graph.json"
     stats_path = out_dir / "processing_stats.json"
-    
-    # Save nodes (backup)
-    with open(nodes_path, "w", encoding="utf-8") as f:
-        json.dump(all_nodes, f, indent=2)
-    
-    # Save embeddings (backup)
-    if all_embeddings:
-        embeddings_matrix = np.vstack(all_embeddings)
-        np.save(embeddings_path, embeddings_matrix)
     
     # Export knowledge graph
     kg.export_graph(kg_path)
@@ -916,33 +1008,23 @@ def process_documents(
     # Save processing stats
     stats = {
         "total_documents": len(pdfs),
-        "total_chunks": len(all_nodes),
-        "avg_chunks_per_doc": len(all_nodes) / len(pdfs) if pdfs else 0,
+        "total_chunks": total_chunks,
         "embedding_dimension": embedder.dim,
         "chunk_size": max_chars,
         "overlap": overlap,
         "entity_stats": kg.get_entity_stats(),
         "total_relations": len(kg.relations),
-        "using_weaviate": use_weaviate
+        "storage": "ChromaDB"
     }
     
     with open(stats_path, "w", encoding="utf-8") as f:
         json.dump(stats, f, indent=2)
     
     print("Processing complete.")
-    if use_weaviate:
-        print(f"✅ Weaviate: {len(all_nodes)} chunks stored")
-    print(f"Nodes (backup): {nodes_path}")
-    print(f"Embeddings (backup): {embeddings_path}")
     print(f"Knowledge Graph: {kg_path}")
     print(f"Stats: {stats_path}")
-    print("Summary:")
-    print(f"  Documents: {len(pdfs)}")
-    print(f"  Chunks: {len(all_nodes)}")
-    print(f"  Entities: {sum(kg.get_entity_stats().values())}")
-    print(f"  Relations: {len(kg.relations)}")
     
-    return nodes_path, embeddings_path, kg_path, stats_path
+    return kg_path, stats_path
 
 
 # ----------------------
@@ -959,20 +1041,23 @@ def retrieve(
     patient_ctx: Optional[Dict[str, Any]] = None
 ) -> List[Dict[str, Any]]:
     """
-    Retrieve relevant chunks with MMR reranking.
-    Uses Weaviate if available, falls back to NumPy files.
+    Retrieve relevant chunks with MMR reranking using ChromaDB.
     """
     print(f"Query: {query}")
     
-    # Try Weaviate first
-    weaviate_client = get_weaviate_client()
-    use_weaviate = weaviate_client is not None and weaviate_client.collections.exists(WEAVIATE_COLLECTION)
+    # Connect to Chroma
+    client = get_chroma_client()
+    if client is None:
+        print("❌ ChromaDB unavailable.")
+        return []
+        
+    collection = get_chroma_collection(client)
     
     # Embed query
     embedder = get_embedder(model_name)
     query_vec = embedder.embed_query(query)
     
-    # Load knowledge graph
+    # Load knowledge graph for boosting
     kg_path = out_dir / "knowledge_graph.json"
     kg = MedicalKnowledgeGraph()
     if kg_path.exists():
@@ -982,112 +1067,62 @@ def retrieve(
             for etype, ents in kg_data.get("entities", {}).items():
                 kg.entities[etype] = set(ents)
     
-    if use_weaviate:
-        print("🔍 Searching with Weaviate...")
-        collection = weaviate_client.collections.get(WEAVIATE_COLLECTION)
+    print("🔍 Searching with ChromaDB...")
+    
+    # Query Chroma
+    results = collection.query(
+        query_embeddings=[query_vec.tolist()],
+        n_results=topk_search,
+        include=["metadatas", "documents", "distances", "embeddings"]
+    )
+    
+    # Process results
+    candidates = []
+    candidate_vecs = []
+    
+    if not results['ids'] or not results['ids'][0]:
+        print("⚠️  No results found in ChromaDB")
+        return []
+
+    num_hits = len(results['ids'][0])
+    
+    for i in range(num_hits):
+        dist = results['distances'][0][i]
+        similarity = 1 - dist # Chroma returns distance
         
-        # Query Weaviate with vector search
-        response = collection.query.near_vector(
-            near_vector=query_vec.tolist(),
-            limit=topk_search,
-            return_metadata=MetadataQuery(distance=True)
-        )
-        
-        # Convert Weaviate results to our format
-        candidates = []
-        candidate_vecs = []
-        
-        for obj in response.objects:
-            # Calculate similarity from distance (Weaviate returns cosine distance)
-            similarity = 1 - obj.metadata.distance
+        if similarity >= min_relevance:
+            metadata = results['metadatas'][0][i]
+            # Parse entity_counts back from JSON string if needed
+            if isinstance(metadata.get("entity_counts"), str):
+                try:
+                    metadata["entity_counts"] = json.loads(metadata["entity_counts"])
+                except:
+                    pass
             
-            if similarity >= min_relevance:
-                # Parse entity_counts back from JSON
-                entity_counts = json.loads(obj.properties.get("entity_counts", "{}")) if obj.properties.get("entity_counts") else {}
-                
-                candidates.append({
-                    "text": obj.properties["text"],
-                    "score": float(similarity),
-                    "metadata": {
-                        "document_name": obj.properties.get("document_name", ""),
-                        "document_title": obj.properties.get("document_title", ""),
-                        "chunk_index": obj.properties.get("chunk_index", 0),
-                        "total_chunks": obj.properties.get("total_chunks", 0),
-                        "page_number": obj.properties.get("page_number", 0),
-                        "total_pages": obj.properties.get("total_pages", 0),
-                        "relevance_score": obj.properties.get("relevance_score", 0.0),
-                        "entity_counts": entity_counts,
-                        "has_relations": obj.properties.get("has_relations", False),
-                    },
-                    "node_id": str(obj.uuid)
-                })
-                
-                # Store vector for MMR reranking
-                if obj.vector is not None:
-                    candidate_vecs.append(obj.vector)
-        
-        if len(candidates) == 0:
-            print("⚠️  No results above relevance threshold")
-            return []
-        
-        # MMR reranking for diversity
-        if len(candidate_vecs) > 0:
-            candidate_vecs_np = np.array(candidate_vecs, dtype=np.float32)
-            reranked_indices = mmr_rerank(query_vec, candidate_vecs_np, lambda_param=0.6, top_k=min(topk_rerank, len(candidates)))
-            results = [candidates[i] for i in reranked_indices]
-        else:
-            results = candidates[:topk_rerank]
-        
-    else:
-        # Fallback to NumPy files
-        print("⚠️  Weaviate unavailable, using file-based retrieval...")
-        nodes_path = out_dir / "nodes.json"
-        embeddings_path = out_dir / "embeddings.npy"
-        
-        if not nodes_path.exists() or not embeddings_path.exists():
-            print("❌ No processed data found. Run document processing first.")
-            return []
-        
-        with open(nodes_path, "r", encoding="utf-8") as f:
-            nodes = json.load(f)
-        
-        embeddings = np.load(embeddings_path)
-        
-        # Compute similarities
-        query_norm = query_vec / (np.linalg.norm(query_vec) + 1e-9)
-        doc_norms = embeddings / (np.linalg.norm(embeddings, axis=1, keepdims=True) + 1e-9)
-        similarities = doc_norms @ query_norm
-        
-        # Get top-k candidates
-        top_indices = np.argsort(similarities)[::-1][:topk_search]
-        top_sims = similarities[top_indices]
-        
-        # Filter by minimum relevance
-        valid_mask = top_sims >= min_relevance
-        top_indices = top_indices[valid_mask]
-        top_sims = top_sims[valid_mask]
-        
-        if len(top_indices) == 0:
-            print("⚠️  No results above relevance threshold")
-            return []
-        
-        # MMR reranking for diversity
-        candidate_vecs = embeddings[top_indices]
-        reranked_local_indices = mmr_rerank(query_vec, candidate_vecs, lambda_param=0.6, top_k=topk_rerank)
-        reranked_indices = [top_indices[i] for i in reranked_local_indices]
-        
-        # Build results
-        results = []
-        for idx in reranked_indices:
-            node = nodes[idx]
-            score = float(similarities[idx])
-            
-            results.append({
-                "text": node["text"],
-                "score": score,
-                "metadata": node.get("metadata", {}),
-                "node_id": node.get("id", "")
+            candidates.append({
+                "text": results['documents'][0][i],
+                "score": float(similarity),
+                "metadata": metadata,
+                "node_id": results['ids'][0][i]
             })
+            
+            # Store vector for MMR reranking is tricky without API returning it
+            # But we added "embeddings" to include list
+            if results.get('embeddings') is not None:
+                candidate_vecs.append(results['embeddings'][0][i])
+    
+    if len(candidates) == 0:
+        print("⚠️  No results above relevance threshold")
+        return []
+    
+    # MMR reranking for diversity
+    if len(candidate_vecs) > 0:
+        candidate_vecs_np = np.array(candidate_vecs, dtype=np.float32)
+        reranked_indices = mmr_rerank(query_vec, candidate_vecs_np, lambda_param=0.6, top_k=min(topk_rerank, len(candidates)))
+        final_results = [candidates[i] for i in reranked_indices]
+    else:
+        final_results = candidates[:topk_rerank]
+    
     
     # Knowledge graph boost (if patient context provided)
     if patient_ctx:
@@ -1096,7 +1131,7 @@ def retrieve(
         
         if indicated_stages:
             boosted_results = []
-            for result in results:
+            for result in final_results:
                 text_lower = result["text"].lower()
                 boosted = dict(result)
                 
@@ -1110,13 +1145,13 @@ def retrieve(
             
             # Re-sort by boosted scores
             boosted_results.sort(key=lambda x: x["score"], reverse=True)
-            results = boosted_results
+            final_results = boosted_results
             
             print(f"Knowledge graph indicators: {len(kg_insights.get('stage_indicators', []))}")
     
-    print(f"Retrieved {len(results)} results (from {len(top_indices)} candidates)")
+    print(f"Retrieved {len(final_results)} results (from {len(candidates)} candidates)")
     
-    return results
+    return final_results
 
 
 # ----------------------
@@ -1159,12 +1194,24 @@ def main():
             except Exception:
                 pass
     
+    # Parse limit
+    limit_val = None
+    for arg in sys.argv:
+        if arg.startswith("--limit="):
+            try:
+                limit_val = int(arg.split("=", 1)[1])
+            except:
+                pass
+
     if command == "process" or command == "reprocess":
         print("Processing documents...")
         print(f"PDF Directory: {pdf_dir}")
         print(f"Output Directory: {out_dir}")
         print(f"Chunk Size: {MAX_CHARS}")
         print(f"Overlap: {OVERLAP}")
+        print(f"Storage: ChromaDB ({CHROMA_DB_DIR})")
+        if limit_val:
+            print(f"Limit: {limit_val} documents")
         
         if not pdf_dir.exists():
             print(f"❌ Error: PDF directory not found: {pdf_dir}")
@@ -1179,18 +1226,13 @@ def main():
             overlap=OVERLAP,
             batch_size=BATCH_SIZE,
             ner_mode=ner_mode,
-            limit=None
+            limit=limit_val
         )
         
-        print("Done. To test retrieval: python enhanced_medical_rag.py test")
+        print("Done. To test retrieval: python app/services/processing_rag.py test")
     
     elif command == "test":
         print("Testing retrieval...")
-        
-        if not out_dir.exists():
-            print(f"❌ Error: Processed data not found: {out_dir}")
-            print(f"   Run 'python {Path(__file__).name}' first to process documents")
-            return
         
         # Test queries
         test_queries = [
@@ -1230,11 +1272,6 @@ def main():
     else:
         # Treat as a query
         query = " ".join(sys.argv[1:])
-        
-        if not out_dir.exists():
-            print(f" Error: Processed data not found: {out_dir}")
-            print(f"   Run 'python {Path(__file__).name}' first to process documents")
-            return
         
         print(f"Searching: {query}")
         

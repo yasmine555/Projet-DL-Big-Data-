@@ -6,27 +6,27 @@ import xai from '../image/xai.png';
 function LandingSection() {
   const navigate = useNavigate();
 
- 
+
   const handleUserTypeSelect = (userType) => {
     localStorage.setItem('userType', userType);
     if (userType === 'doctor') {
       navigate('/doctor/signin');
     } else {
-      navigate('/input');
+      navigate('/patient/form');
     }
   };
 
   return (
     <div className="relative">
       {/* Fixed background */}
-      <div 
-        className="fixed inset-0 bg-gradient-to-br from-blue-50 to-indigo-50" 
+      <div
+        className="fixed inset-0 bg-gradient-to-br from-blue-50 to-indigo-50"
         style={{ zIndex: -1 }}
       ></div>
 
       {/* Fixed Navigation */}
 
-      
+
       {/* Content that scrolls (with padding-top to account for fixed navbar) */}
       <div className="relative min-h-screen pt-20">
         {/* Hero Section with more spacing */}
@@ -36,26 +36,26 @@ function LandingSection() {
             <h1 className="text-4xl md:text-5xl font-bold text-gray-800 mb-6">
               Welcome to <span className="text-blue-500">NeuroAI</span> Assistant
             </h1>
-            
+
             {/* Three words with more spacing and centered */}
             <div className="flex flex-wrap justify-center gap-4 mb-8">
               <div className="px-6 py-2 bg-blue-100 rounded-full text-blue-600 font-medium">Intelligent</div>
               <div className="px-6 py-2 bg-teal-100 rounded-full text-teal-600 font-medium">Explanatory</div>
               <div className="px-6 py-2 bg-purple-100 rounded-full text-purple-600 font-medium">Interactive</div>
             </div>
-            
+
             <p className="text-gray-600 text-lg mb-10 max-w-2xl mx-auto">
-              An advanced AI platform that combines deep learning with medical expertise to assist in 
+              An advanced AI platform that combines deep learning with medical expertise to assist in
               the diagnosis and understanding of neurodegenerative diseases through MRI analysis.
             </p>
           </div>
-              
+
           {/* Centered buttons with more spacing */}
           <div className="max-w-3xl mx-auto">
             <h2 className="text-2xl font-semibold text-gray-800 text-center mb-8">
               Choose Your Experience
             </h2>
-            
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
               <div className="bg-white bg-opacity-90 p-6 rounded-xl shadow-md border border-gray-100 hover:shadow-lg transition-shadow flex flex-col items-center text-center">
                 <div className="p-3 bg-blue-100 rounded-full mb-4">
@@ -67,14 +67,14 @@ function LandingSection() {
                 <p className="text-gray-600 mb-6 text-sm">
                   Access technical analysis with scientific terminology and detailed explainability features designed for healthcare providers.
                 </p>
-                <button 
+                <button
                   onClick={() => handleUserTypeSelect('doctor')}
                   className="bg-blue-500 hover:bg-blue-600 text-white px-6 py-2 rounded-full transition-colors font-medium"
                 >
                   Enter as Professional
                 </button>
               </div>
-              
+
               <div className="bg-white bg-opacity-90 p-6 rounded-xl shadow-md border border-gray-100 hover:shadow-lg transition-shadow flex flex-col items-center text-center">
                 <div className="p-3 bg-teal-100 rounded-full mb-4">
                   <svg className="w-8 h-8 text-teal-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -85,7 +85,7 @@ function LandingSection() {
                 <p className="text-gray-600 mb-6 text-sm">
                   Receive simplified explanations with accessible terminology and visual guidance designed for patients and families.
                 </p>
-                <button 
+                <button
                   onClick={() => handleUserTypeSelect('patient')}
                   className="bg-teal-500 hover:bg-teal-600 text-white px-6 py-2 rounded-full transition-colors font-medium"
                 >
@@ -99,7 +99,7 @@ function LandingSection() {
         {/* Features Section with transparent background - SMALLER IMAGES */}
         <div className="container mx-auto px-6 py-16 bg-transparent" id="features">
           <h2 className="text-3xl font-bold text-center text-gray-800 mb-12">Our Advanced Capabilities</h2>
-          
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-10 items-center mb-16">
             <div className="bg-white bg-opacity-80 p-6 rounded-xl shadow-md">
               <h3 className="text-2xl font-semibold text-gray-800 mb-4">Deep Learning Diagnostics</h3>
@@ -115,19 +115,19 @@ function LandingSection() {
               </div>
             </div>
             <div className="flex justify-center">
-              <img 
-                className="rounded-xl" 
+              <img
+                className="rounded-xl"
                 src={dl}
                 alt="Neural network visualization"
                 style={{ maxHeight: "250px", objectFit: "contain" }}
               />
             </div>
           </div>
-          
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-10 items-center">
             <div className="order-2 md:order-1 flex justify-center">
-              <img 
-                className="rounded-xl" 
+              <img
+                className="rounded-xl"
                 src={xai}
                 alt="Explainable AI visualization"
                 style={{ maxHeight: "250px", objectFit: "contain" }}

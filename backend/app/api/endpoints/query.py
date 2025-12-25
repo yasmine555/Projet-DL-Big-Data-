@@ -14,8 +14,7 @@ from .auth import require_doctor
 import os
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '..', '..')))
-# rag
-from app.core.alzheimer_rag_system import AlzheimerRAGSystem, UserType, PatientContext
+
 
 
 
@@ -86,31 +85,54 @@ async def handle_enhanced_query(
         except Exception:
             doctor = None
 
-    rag = AlzheimerRAGSystem()
-    user_type = UserType(payload.user_type) if payload.user_type in [u.value for u in UserType] else UserType.PATIENT
+    # rag = AlzheimerRAGSystem() - REMOVED legacy RAG
+    # user_type = UserType(payload.user_type) ... - REMOVED legacy type check
     
-    # Convert dictionary context to PatientContext object
-    patient_context_obj = None
-    if payload.context:
-        ctx = payload.context
-        patient_context_obj = PatientContext(
-            age=ctx.get("age"),
-            symptoms=ctx.get("symptoms_list") or ctx.get("symptoms", []),
-            mmse_score=ctx.get("mmse_score"),
-            moca_score=ctx.get("moca_score"),
-            medical_history=ctx.get("medical_history", []),
-            current_medications=ctx.get("current_medications", []),
-            biomarkers=ctx.get("biomarkers"),
-            extra=ctx.get("extra")
-        )
+    # We proceed directly to AgentOrchestrator which handles logic internally
 
-    result = rag.query(
-        user_query=payload.query,
-        user_type=user_type,
-        patient_context=patient_context_obj,
-        explain=payload.explain,
-        history=payload.history
-    )
+    # --- AGENTIC INTEGRATION START ---
+    
+    # We replace the old RAG call with the new AgentOrchestrator
+    # Note: We need to import AgentOrchestrator at the top, but for now we do lazy import or assume it's added.
+    from app.services.agent_service import AgentOrchestrator
+    
+    # Context string builder for the agent
+    # We might pass the context object directly if the tool supports it, 
+    # but the agent tools currently fetch from DB using patient_id.
+    # So we just rely on patient_id being passed.
+    
+    agent = AgentOrchestrator()
+    
+    try:
+        # Run the agent
+        # The agent returns the final string answer.
+        # Reasoning trace is hidden in LangGraph state, we might want to expose it later.
+        agent_response = await agent.run(
+            query=payload.query,
+            user_role=payload.user_type,
+            patient_id=payload.patient_id or "unknown",
+            context_type="chatbot"  # Use 'chatbot' mode for research tools
+        )
+        
+        # Map to result structure
+        result = {
+            "answer": agent_response,
+            "confidence": 0.9, # Placeholder until we extract score from agent state
+            "query_type": "agentic_processed",
+            "sources": ["Agent Tool Execution"], # detailed sources need extraction from state
+            "short_summary": agent_response[:100] + "..."
+        }
+
+    except Exception as e:
+        logger.error(f"Agent Execution Failed: {e}")
+        # Fallback to old RAG or error
+        result = {
+            "answer": "I apologize, but I encountered an error processing your request with the advanced agent.",
+            "confidence": 0.0,
+            "query_type": "error"
+        }
+
+    # --- AGENTIC INTEGRATION END ---
 
     # Persist conversation and result if patient_id provided
     patient_id = payload.patient_id

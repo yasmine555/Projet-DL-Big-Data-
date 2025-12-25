@@ -30,6 +30,11 @@ function App() {
       <Route path="/doctor/patient/form" element={<PatientFormPage />} />
       <Route path="/doctor/patient/result/:patientId?" element={<ResultPage />} />
       <Route path="/doctor/patient/result/chatbot/:patientId?" element={<ChatbotPage />} />
+
+      {/* Patient Routes */}
+      <Route path="/patient/form" element={<PatientFormPage />} />
+      <Route path="/patient/result/:patientId?" element={<ResultPage />} />
+      <Route path="/patient/result/chatbot/:patientId?" element={<ChatbotPage />} />
     </Routes>
 
   );

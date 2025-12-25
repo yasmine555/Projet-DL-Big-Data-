@@ -28,7 +28,7 @@ Environment variables (create `backend/.env` or root `.env`):
 
 Run API (FastAPI via Uvicorn):
 ```powershell
-Push-Location "c:\Bureau\projet_Dl\Projet-DL-Big-Data-\backend\app";pip install reauirements.txt; ./../venv/Scripts/activate.ps1; uvicorn main:app --reload; Pop-Location
+Push-Location "c:\Bureau\projet_Dl\Projet-DL-Big-Data-\backend\app";pip install reauirements.txt; ./../venv/Scripts/activate.ps1; python -m uvicorn app.main:app --host 0.0.0.0 --port 7000 --reload ; Pop-Location
 ```
 ## Frontend Setup
 ```powershell

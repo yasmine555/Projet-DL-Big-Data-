@@ -29,7 +29,7 @@ export default function MRIUploadSection({ visible, errors, selectedFile, previe
             <input
               id="mriUpload"
               type="file"
-              accept=".dcm,.nii,.nii.gz,.jpg,.jpeg,.png"
+              accept=".jpg,.jpeg,.png"
               onChange={handleFile}
               className="hidden"
             />
@@ -38,7 +38,7 @@ export default function MRIUploadSection({ visible, errors, selectedFile, previe
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
               </svg>
               <span className="font-medium text-indigo-600">
-                {selectedFile ? selectedFile.name : 'Click to upload MRI scan'}
+                {selectedFile ? selectedFile.name : 'Click to upload MRI scan (JPG, PNG)'}
               </span>
             </label>
           </div>

@@ -89,7 +89,12 @@ async def signup(
         if ext not in [".png", ".jpg", ".jpeg", ".pdf", ".webp"]:
             ext = ".dat"
         fname = f"{uuid.uuid4().hex}{ext}"
-        stored_path = os.path.join(UPLOAD_DIR, fname)
+        
+        # Create certificate subdirectory
+        cert_dir = os.path.join(UPLOAD_DIR, "certificate")
+        os.makedirs(cert_dir, exist_ok=True)
+        
+        stored_path = os.path.join(cert_dir, fname)
         try:
             contents = await credential_file.read()
             with open(stored_path, "wb") as f:
@@ -97,6 +102,7 @@ async def signup(
             stored_url = f"/uploads/certificate/{fname}"
         except Exception:
             raise HTTPException(status_code=500, detail="Failed to save certificate file")
+
 
     doc = {
         "first_name": first_name.strip(),

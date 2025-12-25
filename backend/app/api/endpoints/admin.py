@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Request, HTTPException, Query
 from typing import List, Dict, Any
-from app.services.ragas_evaluator import RAGASEvaluator
+
 import traceback
 import logging
-from app.core.alzheimer_rag_system import UserType
+
 from typing import Union
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
@@ -18,7 +18,6 @@ async def sample_chunks(request: Request, limit: int = Query(20, ge=1, le=100)):
         nodes = rag.retriever.nodes
     else:
         # fallback: try to load nodes.pkl from configured path
-        from app.core.alzheimer_rag_system import RAGConfig
         cfg = RAGConfig()
         p = cfg.embeddings_path
         import pickle, os

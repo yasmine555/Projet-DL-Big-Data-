@@ -18,6 +18,7 @@ class Biomarkers(BaseModel):
 
 
 class QuestionnaireMetadata(BaseModel):
+    name: Optional[str] = Field(None, description="Patient Name")
     age: Optional[int] = Field(None)
     sex: Optional[str] = Field(None)
     education_level: Optional[str] = Field(None)
