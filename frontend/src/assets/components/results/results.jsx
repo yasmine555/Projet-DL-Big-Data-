@@ -410,7 +410,7 @@ function Results() {
                                     </p>
                                 ) : (
                                     <p className="text-gray-700 text-base">
-                                        Explainable AI visualization will be generated once an MRI scan is uploaded and analyzed by our ResNet50 model.
+                                        Explainable AI visualization will be generated once an MRI scan is uploaded and analyzed by our VGG16 model.
                                     </p>
                                 )}
                             </div>
